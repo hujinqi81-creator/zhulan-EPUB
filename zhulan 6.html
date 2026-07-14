@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="paper">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>逐栏 · EPUB 分栏阅读器</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+/* ============ tokens ============ */
+:root{
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans","Noto Sans CJK SC","Segoe UI",sans-serif;
+  --serif:Georgia,"Songti SC","Noto Serif CJK SC","Source Han Serif SC","Hiragino Mincho ProN","Times New Roman",serif;
+  --dur:.22s;
+}
+html[data-theme="paper"]{
+  --bg:#F6F4ED; --panel:#FDFCF8; --ink:#28241A; --ink2:rgba(40,36,26,.58);
+  --hair:rgba(40,36,26,.16); --hair2:rgba(40,36,26,.08);
+  --accent:#B8432F; --accent-soft:rgba(184,67,47,.12); --tick:rgba(40,36,26,.18); --tick-read:rgba(40,36,26,.42);
+  --shadow:0 12px 40px rgba(40,36,26,.14);
+}
+html[data-theme="sepia"]{
+  --bg:#F0E6CE; --panel:#F8F1DE; --ink:#45361C; --ink2:rgba(69,54,28,.6);
+  --hair:rgba(69,54,28,.18); --hair2:rgba(69,54,28,.09);
+  --accent:#A63D2A; --accent-soft:rgba(166,61,42,.14); --tick:rgba(69,54,28,.2); --tick-read:rgba(69,54,28,.45);
+  --shadow:0 12px 40px rgba(69,54,28,.16);
+}
+html[data-theme="night"]{
+  --bg:#131417; --panel:#1C1E23; --ink:#C8CAD0; --ink2:rgba(200,202,208,.55);
+  --hair:rgba(200,202,208,.16); --hair2:rgba(200,202,208,.08);
+  --accent:#D06A55; --accent-soft:rgba(208,106,85,.16); --tick:rgba(200,202,208,.2); --tick-read:rgba(200,202,208,.45);
+  --shadow:0 12px 40px rgba(0,0,0,.5);
+}
+/* ============ base ============ */
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{height:100%; background:var(--bg)}
+body{
+  margin:0; position:fixed; inset:0; overflow:hidden; width:100%;
+  background:var(--bg); color:var(--ink);
+  font-family:var(--sans); font-size:15px;
+  overscroll-behavior:none; -webkit-text-size-adjust:100%;
+  transition:background var(--dur),color var(--dur);
+}
+button{font-family:var(--sans); color:inherit; background:none; border:none; cursor:pointer}
+.hidden{display:none!important}
+/* ============ home / empty state ============ */
+#home{
+  height:100%; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:0; padding:32px 24px calc(32px + env(safe-area-inset-bottom));
+  text-align:center;
+}
+.wordmark{font-family:var(--serif); font-size:56px; letter-spacing:.06em; line-height:1; display:flex; align-items:center; gap:.14em; user-select:none}
+.wordmark .seal{
+  color:var(--accent); border:2.5px solid var(--accent); border-radius:8px;
+  padding:.04em .1em .08em; display:inline-block;
+}
+.colglyph{display:flex; gap:10px; height:64px; margin:34px 0 26px; align-items:stretch}
+.colglyph span{width:15px; border-radius:3px; background:var(--tick)}
+.colglyph span.on{background:var(--accent)}
+@media (prefers-reduced-motion:no-preference){
+  .colglyph span.on{animation:stepcol 3.2s steps(1) infinite}
+  .colglyph span:nth-child(1).on{animation-delay:0s}
+  @keyframes stepcol{0%,32%{background:var(--accent)}33%,100%{background:var(--tick)}}
+  .colglyph span:nth-child(2){animation:stepcol2 3.2s steps(1) infinite}
+  @keyframes stepcol2{0%,32%{background:var(--tick)}33%,65%{background:var(--accent)}66%,100%{background:var(--tick)}}
+  .colglyph span:nth-child(3){animation:stepcol3 3.2s steps(1) infinite}
+  @keyframes stepcol3{0%,65%{background:var(--tick)}66%,100%{background:var(--accent)}}
+}
+.tagline{font-size:16px; color:var(--ink2); margin:0 0 34px}
+#openBtn{
+  font-size:17px; font-weight:600; letter-spacing:.04em;
+  padding:14px 40px; border-radius:12px;
+  background:var(--ink); color:var(--bg);
+  transition:transform .12s;
+}
+#openBtn:active{transform:scale(.97)}
+.hint{margin-top:16px; font-size:13px; color:var(--ink2)}
+.privacy{margin-top:42px; max-width:420px; font-size:12.5px; line-height:1.8; color:var(--ink2); border-top:1px solid var(--hair2); padding-top:18px}
+#homeErr{margin-top:18px; font-size:13.5px; color:var(--accent); max-width:420px}
+body.dragover #home{outline:3px dashed var(--accent); outline-offset:-14px; border-radius:24px}
+/* ============ reader chrome ============ */
+#reader{
+  position:fixed; top:0; left:0; width:100%;
+  height:100vh; height:100svh;
+  display:flex; flex-direction:column;
+}
+#topbar{
+  order:-1; flex:none;
+  display:flex; align-items:center; gap:6px;
+  padding:calc(8px + env(safe-area-inset-top)) 10px 8px;
+  border-bottom:1px solid var(--hair2);
+}
+#topbar .title{
+  flex:1; min-width:0; text-align:center; font-size:14px; color:var(--ink2);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 4px;
+}
+#topbar .title b{color:var(--ink); font-weight:600}
+.iconbtn{
+  flex:none; width:40px; height:36px; border-radius:9px; font-size:13.5px; font-weight:600;
+  display:flex; align-items:center; justify-content:center; color:var(--ink);
+}
+.iconbtn:active,.iconbtn.on{background:var(--accent-soft); color:var(--accent)}
+/* ============ stage / content ============ */
+#stage{
+  flex:1 1 auto; min-height:0; position:relative;
+  padding:var(--pad-v) calc(var(--pad-h) + env(safe-area-inset-right)) var(--pad-v) calc(var(--pad-h) + env(safe-area-inset-left));
+}
+#content{
+  width:100%; height:100%; overflow:hidden;
+  column-fill:auto;
+  font-family:var(--rfont); font-size:var(--fs); line-height:var(--lh);
+  text-align:var(--talign);
+  -webkit-hyphens:auto; hyphens:auto;
+  overflow-wrap:break-word;
+  touch-action:manipulation;
+}
+#content.indent p{text-indent:2em; margin:var(--pgap) 0}
+#content:not(.indent) p{text-indent:0; margin:.75em 0}
+#content h1,#content h2,#content h3,#content h4{line-height:1.5; break-after:avoid}
+#content img,#content svg,#content image{
+  max-width:100%!important; max-height:var(--imgmax)!important;
+  height:auto; object-fit:contain; break-inside:avoid; display:inline-block;
+}
+#content figure{margin:1em 0; break-inside:avoid; max-width:100%}
+#content table{max-width:100%; display:block; overflow-x:auto; border-collapse:collapse; font-size:.9em}
+#content td,#content th{border:1px solid var(--hair); padding:.3em .5em}
+#content a{color:var(--accent); text-decoration:none; border-bottom:1px solid var(--accent-soft)}
+#content pre{white-space:pre-wrap; font-size:.85em; background:var(--hair2); padding:.7em; border-radius:8px}
+#content blockquote{margin:1em 0; padding:0 0 0 1em; border-left:3px solid var(--hair); color:var(--ink2)}
+#content hr{border:none; border-top:1px solid var(--hair); margin:1.6em 10%}
+#loading{
+  position:absolute; inset:0; z-index:5; display:flex; align-items:center; justify-content:center;
+  font-size:14px; color:var(--ink2); background:var(--bg);
+}
+/* ============ bottom rail (signature) ============ */
+#bottombar{
+  flex:none;
+  padding:6px 14px calc(8px + env(safe-area-inset-bottom));
+  display:flex; flex-direction:column; gap:7px;
+}
+#status{
+  display:flex; justify-content:space-between; gap:12px;
+  font-size:12px; color:var(--ink2); font-variant-numeric:tabular-nums;
+}
+#status .chap{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+#rail{display:flex; gap:2.5px; height:18px; align-items:center; touch-action:none;
+  -webkit-user-select:none; user-select:none; -webkit-touch-callout:none}
+#rail.scrub .tick{height:10px}
+#rail.scrub .bar{height:8px}
+#scrubBubble{
+  position:fixed; z-index:80; transform:translateX(-50%);
+  bottom:calc(44px + env(safe-area-inset-bottom));
+  background:var(--ink); color:var(--bg); font-size:13px; font-variant-numeric:tabular-nums;
+  padding:7px 14px; border-radius:11px; box-shadow:var(--shadow);
+  opacity:0; pointer-events:none; transition:opacity .12s;
+}
+#scrubBubble.show{opacity:1}
+#rail .tick{flex:1; height:4px; border-radius:2px; background:var(--tick); min-width:1px; transition:background .15s, height .15s; padding:0}
+#rail .tick.read{background:var(--tick-read)}
+#rail .tick.active{background:var(--accent); height:8px}
+#rail .bar{flex:1; height:4px; border-radius:2px; background:var(--tick); position:relative; overflow:hidden}
+#rail .bar i{position:absolute; left:0; top:0; bottom:0; background:var(--accent); border-radius:2px}
+/* ============ panels ============ */
+#scrim{position:fixed; inset:0; z-index:40; background:rgba(0,0,0,.28); opacity:0; pointer-events:none; transition:opacity var(--dur)}
+body.panel-open #scrim{opacity:1; pointer-events:auto}
+.panel{
+  position:fixed; top:0; bottom:0; z-index:50; width:min(360px,88vw);
+  background:var(--panel); box-shadow:var(--shadow);
+  display:flex; flex-direction:column;
+  transition:transform .26s cubic-bezier(.2,.7,.3,1);
+  padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom);
+}
+#tocPanel{left:0; transform:translateX(-105%)}
+#setPanel{right:0; transform:translateX(105%)}
+#tocPanel.open,#setPanel.open{transform:translateX(0)}
+.panel h2{
+  font-size:13px; letter-spacing:.18em; font-weight:600; color:var(--ink2);
+  margin:0; padding:18px 20px 12px; border-bottom:1px solid var(--hair2);
+}
+.panel .body{flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch}
+#tocList{padding:6px 0 24px}
+#tocList button{
+  display:block; width:100%; text-align:left; font-size:14.5px; line-height:1.5;
+  padding:10px 20px 10px calc(20px + var(--d,0) * 16px); color:var(--ink);
+}
+#tocList button:active{background:var(--accent-soft)}
+#tocList button.cur{color:var(--accent); font-weight:600}
+#tocList .empty{padding:20px; color:var(--ink2); font-size:13.5px}
+/* settings controls */
+.set{padding:14px 20px; border-bottom:1px solid var(--hair2)}
+.set label{display:flex; justify-content:space-between; font-size:13px; color:var(--ink2); margin-bottom:9px}
+.set label b{color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums}
+.seg{display:flex; gap:5px}
+.seg button{
+  flex:1; padding:8px 4px; font-size:13.5px; border-radius:9px;
+  border:1px solid var(--hair); color:var(--ink);
+}
+.seg button.on{background:var(--ink); color:var(--bg); border-color:var(--ink)}
+.stepper{display:flex; align-items:center; gap:10px}
+.stepper button{
+  width:44px; height:36px; border:1px solid var(--hair); border-radius:9px; font-size:19px; line-height:1;
+}
+.stepper button:active{background:var(--accent-soft)}
+.stepper .val{flex:1; text-align:center; font-size:15px; font-variant-numeric:tabular-nums}
+.switchrow{display:flex; align-items:center; justify-content:space-between; gap:12px}
+.switchrow span{font-size:14px}
+.switchrow small{display:block; color:var(--ink2); font-size:12px; margin-top:2px}
+.sw{width:46px; height:28px; border-radius:14px; background:var(--hair); position:relative; flex:none; transition:background .15s}
+.sw::after{content:""; position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:var(--panel); box-shadow:0 1px 4px rgba(0,0,0,.25); transition:left .15s}
+.sw.on{background:var(--accent)}
+.sw.on::after{left:21px}
+#topbar,#bottombar,.panel,#toast,#backChip{
+  -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+}
+body.scrubbing #content{-webkit-user-select:none; user-select:none}
+/* back chip & toast */
+#backChip{
+  position:fixed; bottom:calc(52px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%);
+  z-index:35; background:var(--ink); color:var(--bg); font-size:13.5px;
+  padding:9px 18px; border-radius:20px; box-shadow:var(--shadow);
+}
+#toast{
+  position:fixed; top:calc(14px + env(safe-area-inset-top)); left:50%; transform:translate(-50%,-8px);
+  z-index:70; background:var(--ink); color:var(--bg); font-size:13.5px; max-width:82vw;
+  padding:10px 18px; border-radius:12px; opacity:0; pointer-events:none;
+  transition:opacity .2s, transform .2s;
+}
+#toast.show{opacity:1; transform:translate(-50%,0)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important; animation:none!important}}
+</style>
+</head>
+<body>
+
+<!-- ============ 首页 ============ -->
+<div id="home">
+  <div class="wordmark">逐<span class="seal">栏</span></div>
+  <div class="colglyph"><span class="on"></span><span></span><span></span></div>
+  <p class="tagline">分栏排版 · 一次只翻一栏的 EPUB 阅读器</p>
+  <button id="openBtn">打开 EPUB</button>
+  <input type="file" id="fileInput" accept=".epub,application/epub+zip" class="hidden">
+  <p class="hint">也可以把 .epub 文件拖进本页</p>
+  <div id="homeErr"></div>
+  <p class="privacy">文件只在本机浏览器内存中解析，不上传服务器、不保存任何数据，关闭或刷新页面即清空。首次加载页面需要联网获取解压组件，之后阅读全程离线可用。</p>
+</div>
+
+<!-- ============ 阅读器 ============ -->
+<div id="reader" class="hidden">
+  <div id="stage"><div id="content" lang="zh"></div></div>
+  <div id="loading" class="hidden">正在排版…</div>
+
+  <div id="topbar">
+    <button class="iconbtn" id="btnClose" title="关闭本书">✕</button>
+    <button class="iconbtn" id="btnToc" title="目录">目录</button>
+    <div class="title" id="barTitle"></div>
+    <button class="iconbtn" id="btnPrevCh" title="上一章">‹章</button>
+    <button class="iconbtn" id="btnNextCh" title="下一章">章›</button>
+    <button class="iconbtn" id="btnSet" title="排版设置">Aa</button>
+  </div>
+
+  <div id="bottombar">
+    <div id="rail"></div>
+    <div id="status"><span class="chap" id="stChap"></span><span id="stCol"></span></div>
+  </div>
+
+  <button id="backChip" class="hidden">↩ 返回跳转前的位置</button>
+</div>
+
+<!-- ============ 目录面板 ============ -->
+<div id="scrim"></div>
+<aside id="tocPanel" class="panel"><h2>目 录</h2><div class="body"><div id="tocList"></div></div></aside>
+
+<!-- ============ 设置面板 ============ -->
+<aside id="setPanel" class="panel">
+  <h2>排 版</h2>
+  <div class="body">
+    <div class="set"><label>栏数 <b id="vCols"></b></label>
+      <div class="seg" id="segCols">
+        <button data-v="auto">自动</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button>
+      </div></div>
+    <div class="set"><label>翻页幅度</label>
+      <div class="seg" id="segTurn">
+        <button data-v="col">一栏（calibre 式）</button><button data-v="screen">整屏</button>
+      </div></div>
+    <div class="set"><label>字号 <b id="vFs"></b></label>
+      <div class="stepper"><button data-k="fontSize" data-d="-1">−</button><div class="val" id="sFs"></div><button data-k="fontSize" data-d="1">＋</button></div></div>
+    <div class="set"><label>行距 <b id="vLh"></b></label>
+      <div class="stepper"><button data-k="lineHeight" data-d="-0.1">−</button><div class="val" id="sLh"></div><button data-k="lineHeight" data-d="0.1">＋</button></div></div>
+    <div class="set"><label>栏间距 <b id="vGap"></b></label>
+      <div class="stepper"><button data-k="gap" data-d="-6">−</button><div class="val" id="sGap"></div><button data-k="gap" data-d="6">＋</button></div></div>
+    <div class="set"><label>页边距 <b id="vMar"></b></label>
+      <div class="stepper"><button data-k="margin" data-d="-1">−</button><div class="val" id="sMar"></div><button data-k="margin" data-d="1">＋</button></div></div>
+    <div class="set"><label>字体</label>
+      <div class="seg" id="segFont"><button data-v="serif">宋体 / 衬线</button><button data-v="sans">黑体 / 无衬线</button></div></div>
+    <div class="set"><label>主题</label>
+      <div class="seg" id="segTheme"><button data-v="paper">纸</button><button data-v="sepia">米</button><button data-v="night">夜</button></div></div>
+    <div class="set switchrow"><span>首行缩进<small>中文书排版惯例</small></span><button class="sw" id="swIndent"></button></div>
+    <div class="set switchrow"><span>两端对齐</span><button class="sw" id="swJustify"></button></div>
+    <div class="set switchrow"><span>使用书内样式<small>实验性：个别书可能排版错乱</small></span><button class="sw" id="swBookCss"></button></div>
+  </div>
+</aside>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+/* ================================================================
+   逐栏 zhulan — single-file EPUB column reader
+   Model (same as calibre): render ONE spine XHTML at a time into a
+   CSS multi-column box of fixed height; every column is a "page";
+   page-turn = shift the viewport by exactly one column.
+   ================================================================ */
+const $ = s => document.querySelector(s);
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ---------------- settings (memory only, no persistence) -------- */
+const S = {
+  cols:'auto', turn:'col', fontSize:19, lineHeight:1.9, gap:42, margin:2,
+  font:'serif', theme:'paper', indent:true, justify:true, bookCss:false
+};
+const MARGINS = [ [10,14],[18,26],[26,40],[36,60],[48,84] ]; // [v,h] px levels 0..4
+
+/* ---------------- book state ------------------------------------ */
+const B = {
+  zip:null, files:{},           // lowercase path -> real path
+  title:'书', spine:[],         // [{href, id}]
+  manifest:{},                  // id -> {href, type, props}
+  hrefToSpine:{},               // resolved href -> spine index
+  toc:[],                       // [{label, spineIdx, frag, depth}]
+  cache:new Map(),              // spineIdx -> sanitized html string
+  idx:0, col:0,                 // current chapter & first visible column
+  step:0, total:1, nVis:1, maxStart:0,
+  hrefType:{}, back:null,
+};
+
+/* ---------------- tiny utils ------------------------------------ */
+const toast = (msg, ms=2600) => { const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toast._h); toast._h=setTimeout(()=>t.classList.remove('show'), ms); };
+const dirname = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')+1) : '';
+function resolvePath(base, rel){
+  rel = rel.split('#')[0];
+  try{ rel = decodeURIComponent(rel); }catch(e){}
+  if(!rel) return base;
+  if(rel.startsWith('/')) rel = rel.slice(1);
+  else rel = dirname(base) + rel;
+  const out=[];
+  for(const part of rel.split('/')){
+    if(part==='.'||part==='') continue;
+    if(part==='..') out.pop(); else out.push(part);
+  }
+  return out.join('/');
+}
+const zfile = p => { if(!p) return null; return B.zip.file(p) || B.zip.file(B.files[p.toLowerCase()] || ''); };
+const getText = async p => { const f=zfile(p); if(!f) throw new Error('缺少文件 '+p); return f.async('string'); };
+const getDataUrl = async p => {
+  const f=zfile(p); if(!f) return null;
+  const mime = B.hrefType[p] || mimeOf(p) || 'image/png';
+  return 'data:'+mime+';base64,'+ await f.async('base64');
+};
+const mimeOf = p => ({jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',gif:'image/gif',webp:'image/webp',svg:'image/svg+xml',bmp:'image/bmp'})[(p.split('.').pop()||'').toLowerCase()] || '';
+function parseXml(text){
+  let doc = new DOMParser().parseFromString(text, 'application/xhtml+xml');
+  if(doc.getElementsByTagName('parsererror').length)
+    doc = new DOMParser().parseFromString(text, 'text/html');
+  return doc;
+}
+
+/* ================================================================
+   1. open & parse the EPUB package
+   ================================================================ */
+async function openEpub(file){
+  $('#homeErr').textContent='';
+  try{
+    if(typeof JSZip === 'undefined') throw new Error('解压组件未能加载：请检查网络后刷新页面（首次打开需要联网）。');
+    const zip = await JSZip.loadAsync(file);
+    B.zip = zip; B.files = {};
+    zip.forEach(p => { B.files[p.toLowerCase()] = p; });
+
+    if(zfile('META-INF/encryption.xml')){
+      const enc = await getText('META-INF/encryption.xml');
+      if(/EncryptedData/i.test(enc) && !/(idpf.*obfuscation|embedding\.idpf|adobe\.com\/pdf\/enc#RC)/i.test(enc))
+        toast('注意：本书可能带有 DRM 保护，内容或无法正常显示', 4000);
+    }
+
+    // container -> OPF
+    const container = parseXml(await getText('META-INF/container.xml'));
+    const rf = container.getElementsByTagName('rootfile')[0];
+    const opfPath = rf && rf.getAttribute('full-path');
+    if(!opfPath) throw new Error('container.xml 里找不到 OPF');
+    const opf = parseXml(await getText(opfPath));
+
+    // metadata title
+    const tEl = opf.getElementsByTagName('dc:title')[0] || opf.getElementsByTagName('title')[0];
+    B.title = (tEl && tEl.textContent.trim()) || file.name.replace(/\.epub$/i,'');
+
+    // manifest
+    B.manifest = {}; B.hrefType = {}; let navHref=null, ncxHref=null;
+    for(const it of opf.getElementsByTagName('item')){
+      const id=it.getAttribute('id'), href=resolvePath(opfPath, it.getAttribute('href')||'');
+      const type=it.getAttribute('media-type')||'', props=it.getAttribute('properties')||'';
+      B.manifest[id]={href,type,props};
+      B.hrefType[href]=type;
+      if(/\bnav\b/.test(props)) navHref=href;
+      if(type==='application/x-dtbncx+xml') ncxHref=href;
+    }
+    // spine
+    B.spine=[]; B.hrefToSpine={};
+    const spineEl = opf.getElementsByTagName('spine')[0];
+    if(!spineEl) throw new Error('OPF 里找不到 spine');
+    const tocId = spineEl.getAttribute('toc');
+    if(tocId && B.manifest[tocId]) ncxHref = B.manifest[tocId].href;
+    for(const ir of spineEl.getElementsByTagName('itemref')){
+      const m = B.manifest[ir.getAttribute('idref')];
+      if(m && m.href){ B.hrefToSpine[m.href]=B.spine.length; B.spine.push({href:m.href}); }
+    }
+    if(!B.spine.length) throw new Error('本书没有可读章节');
+
+    B.toc = await loadToc(navHref, ncxHref).catch(()=>[]);
+    B.cache.clear(); B.idx=0; B.col=0; B.back=null;
+
+    $('#home').classList.add('hidden');
+    $('#reader').classList.remove('hidden');
+    buildTocList(); applySettingsToDom();
+    await showSpine(0, {col:0});
+    toast('左右两侧点按或横向滑动即可逐栏翻页', 3000);
+  }catch(err){
+    console.error(err);
+    $('#homeErr').textContent = '打开失败：' + (err && err.message || err);
+    $('#home').classList.remove('hidden'); $('#reader').classList.add('hidden');
+  }
+}
+
+async function loadToc(navHref, ncxHref){
+  const out=[];
+  const push=(label,href,depth,base)=>{
+    if(!href) return;
+    const frag=(href.split('#')[1]||'');
+    const path=resolvePath(base, href);
+    const si=B.hrefToSpine[path];
+    if(si!==undefined) out.push({label:label.trim()||'（无题）', spineIdx:si, frag, depth});
+  };
+  if(navHref && zfile(navHref)){
+    const doc = parseXml(await getText(navHref));
+    let nav=null;
+    for(const n of doc.getElementsByTagName('nav')){
+      const t=(n.getAttribute('epub:type')||n.getAttributeNS&&n.getAttributeNS('http://www.idpf.org/2007/ops','type')||'');
+      if(/toc/.test(t)){ nav=n; break; }
+    }
+    nav = nav || doc.getElementsByTagName('nav')[0];
+    if(nav){
+      const walk=(ol,depth)=>{ for(const li of ol.children){ if(li.tagName&&li.tagName.toLowerCase()!=='li') continue;
+        const a=li.querySelector(':scope > a[href], :scope > span'); 
+        if(a) push(a.textContent, a.getAttribute&&a.getAttribute('href'), depth, navHref);
+        const sub=li.querySelector(':scope > ol'); if(sub) walk(sub, depth+1);
+      }};
+      const ol = nav.querySelector('ol'); if(ol) walk(ol,0);
+      if(out.length) return out;
+    }
+  }
+  if(ncxHref && zfile(ncxHref)){
+    const doc = parseXml(await getText(ncxHref));
+    const walk=(el,depth)=>{ for(const np of el.children){
+      if(!np.tagName || np.tagName.toLowerCase()!=='navpoint') continue;
+      const lab=np.getElementsByTagName('text')[0];
+      const con=np.getElementsByTagName('content')[0];
+      push(lab?lab.textContent:'', con&&con.getAttribute('src'), depth, ncxHref);
+      walk(np, depth+1);
+    }};
+    const map=doc.getElementsByTagName('navMap')[0];
+    if(map) walk(map,0);
+  }
+  return out;
+}
+
+/* ================================================================
+   2. render one spine item, sanitized, into the column box
+   ================================================================ */
+async function prepareChapter(i){
+  if(B.cache.has(i+'|'+S.bookCss)) return B.cache.get(i+'|'+S.bookCss);
+  const href = B.spine[i].href;
+  const doc = parseXml(await getText(href));
+  const body = doc.getElementsByTagName('body')[0] || doc.documentElement;
+
+  // strip dangerous / unwanted
+  for(const el of [...doc.querySelectorAll('script,iframe,object,embed,audio,video,form,input,source')]) el.remove();
+  for(const el of [...doc.querySelectorAll('*')])
+    for(const a of [...el.attributes]) if(/^on/i.test(a.name)) el.removeAttribute(a.name);
+
+  let styleText='';
+  if(S.bookCss){
+    for(const st of doc.querySelectorAll('style')) styleText += st.textContent + '\n';
+    for(const lk of doc.querySelectorAll('link[rel~="stylesheet" i]')){
+      const p = resolvePath(href, lk.getAttribute('href')||'');
+      try{ styleText += await getText(p) + '\n'; }catch(e){}
+    }
+    styleText = styleText
+      .replace(/@import[^;]+;/g,'')
+      .replace(/url\([^)]*\)/g,'none')
+      .replace(/position\s*:\s*(fixed|absolute)/gi,'position:static')
+      .replace(/(^|[}\s,])body(?=[\s,{.#[:])/gi,'$1#content')
+      .replace(/(^|[}\s,])html(?=[\s,{.#[:])/gi,'$1#content');
+  }
+  for(const el of doc.querySelectorAll('style,link')) el.remove();
+
+  // resolve images -> blob URLs (marked with data-zl-src, filled at mount time)
+  for(const img of doc.querySelectorAll('img[src]')){
+    img.setAttribute('data-zl-src', resolvePath(href, img.getAttribute('src')));
+    img.removeAttribute('src'); img.removeAttribute('srcset'); img.setAttribute('loading','eager');
+  }
+  for(const img of doc.querySelectorAll('img[srcset]:not([data-zl-src])')){
+    const first=(img.getAttribute('srcset')||'').split(',')[0].trim().split(/\s+/)[0];
+    if(first) img.setAttribute('data-zl-src', resolvePath(href, first));
+    img.removeAttribute('srcset'); img.removeAttribute('src'); img.setAttribute('loading','eager');
+  }
+  for(const im of doc.querySelectorAll('image')){
+    const raw = im.getAttribute('xlink:href') || im.getAttribute('href');
+    if(raw){ im.setAttribute('data-zl-src', resolvePath(href, raw));
+      im.removeAttribute('xlink:href'); im.removeAttribute('href'); }
+  }
+  // links: internal vs external
+  for(const a of doc.querySelectorAll('a[href]')){
+    const raw = a.getAttribute('href');
+    if(/^[a-z][a-z0-9+.-]*:/i.test(raw)){ a.setAttribute('target','_blank'); a.setAttribute('rel','noopener'); continue; }
+    const frag = raw.split('#')[1]||'';
+    const path = raw.startsWith('#') ? href : resolvePath(href, raw);
+    const si = B.hrefToSpine[path];
+    if(si!==undefined){ a.setAttribute('data-zl-link', si+'#'+frag); a.setAttribute('role','link'); }
+    a.removeAttribute('href');
+  }
+
+  const html = (styleText?('<style>'+styleText+'</style>'):'') + body.innerHTML;
+  B.cache.set(i+'|'+S.bookCss, html);
+  return html;
+}
+
+async function showSpine(i, opt={}){
+  i = Math.max(0, Math.min(B.spine.length-1, i));
+  const loadTimer = setTimeout(()=>$('#loading').classList.remove('hidden'), 120);
+  let html;
+  try{ html = await prepareChapter(i); }
+  catch(err){ html = '<p style="color:var(--accent)">本章加载失败：'+(err.message||err)+'</p>'; }
+  const content = $('#content');
+  content.innerHTML = html;
+  B.idx = i;
+  // hydrate images
+  await Promise.all([...content.querySelectorAll('[data-zl-src]')].map(async el=>{
+    const p = el.getAttribute('data-zl-src');
+    const url = await getDataUrl(p).catch(()=>null);
+    if(url){ if(el.tagName.toLowerCase()==='image'){ el.setAttribute('href',url); el.setAttribute('xlink:href',url); } else el.src=url; }
+  }));
+  await Promise.all([...content.querySelectorAll('img')].map(img=>
+    (img.decode ? img.decode() : Promise.resolve()).catch(()=>{})));
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+  layout();
+  let col = 0;
+  if(opt.fromEnd) col = B.maxStart;
+  else if(opt.frag) col = colOfFragment(opt.frag);
+  else if(typeof opt.col==='number') col = opt.col;
+  else if(typeof opt.frac==='number') col = Math.round(opt.frac*B.maxStart);
+  goCol(col, false);
+  clearTimeout(loadTimer);
+  $('#loading').classList.add('hidden');
+}
+
+/* ================================================================
+   3. column layout — the heart of it
+   ================================================================ */
+function currentNVis(){
+  if(S.cols!=='auto') return +S.cols;
+  const w = $('#stage').clientWidth;
+  return Math.max(1, Math.min(4, Math.floor(w/400)));
+}
+function layout(){
+  const stage=$('#stage'), content=$('#content');
+  B.stW=stage.clientWidth; B.stH=stage.clientHeight;
+  const [mv,mh]=MARGINS[S.margin];
+  document.documentElement.style.setProperty('--pad-v', mv+'px');
+  document.documentElement.style.setProperty('--pad-h', mh+'px');
+  document.documentElement.style.setProperty('--fs', S.fontSize+'px');
+  document.documentElement.style.setProperty('--lh', S.lineHeight.toFixed(2));
+  document.documentElement.style.setProperty('--pgap', '0.15em');
+  document.documentElement.style.setProperty('--rfont', S.font==='serif'?'var(--serif)':'var(--sans)');
+  document.documentElement.style.setProperty('--talign', S.justify?'justify':'start');
+  content.classList.toggle('indent', S.indent);
+
+  B.nVis = currentNVis();
+  const gap = Math.min(S.gap, 120);
+  // integer column width -> integer step -> pixel-exact jumps even 100+ columns in
+  content.style.width = '100%';
+  const avail = content.clientWidth;
+  const colW = Math.max(80, Math.floor((avail - (B.nVis-1)*gap) / B.nVis));
+  const boxW = colW*B.nVis + gap*(B.nVis-1);
+  content.style.width = boxW+'px';
+  content.style.marginLeft = Math.floor((avail-boxW)/2)+'px';
+  content.style.columnGap = gap+'px';
+  content.style.columnWidth = colW+'px';
+  content.style.columnCount = B.nVis;
+  // image height cap = column height
+  document.documentElement.style.setProperty('--imgmax', Math.floor(content.clientHeight*0.95)+'px');
+
+  B.step = colW + gap;
+  const sw = content.scrollWidth;
+  B.total = Math.max(1, Math.round((sw + gap) / B.step));
+  B.maxStart = Math.max(0, B.total - B.nVis);
+  B.col = Math.max(0, Math.min(B.col, B.maxStart));
+  buildRail();
+  content.scrollTop = 0;
+}
+function goCol(c, smooth=true){
+  B.col = Math.max(0, Math.min(c, B.maxStart));
+  $('#content').scrollTo({left:Math.round(B.col*B.step), top:0, behavior:(smooth&&!reduced)?'smooth':'auto'});
+  updateRail(); updateStatus();
+}
+function colOfFragment(frag){
+  if(!frag) return 0;
+  let el; try{ el = $('#content').querySelector('#'+CSS.escape(frag)) || $('#content').querySelector('[name="'+CSS.escape(frag)+'"]'); }catch(e){}
+  if(!el) return 0;
+  const c=$('#content');
+  const x = el.getBoundingClientRect().left - c.getBoundingClientRect().left + c.scrollLeft;
+  return Math.max(0, Math.min(Math.floor((x+2)/B.step), B.maxStart));
+}
+
+/* -------- paging: THE feature -------- */
+async function pageNext(){
+  const d = S.turn==='screen' ? B.nVis : 1;
+  if(B.col < B.maxStart) goCol(B.col + d);
+  else if(B.idx < B.spine.length-1) await showSpine(B.idx+1, {col:0});
+  else toast('已经是最后一页');
+}
+async function pagePrev(){
+  const d = S.turn==='screen' ? B.nVis : 1;
+  if(B.col > 0) goCol(B.col - d);
+  else if(B.idx > 0) await showSpine(B.idx-1, {fromEnd:true});
+  else toast('已经是第一页');
+}
+
+/* ================================================================
+   4. rail + status
+   ================================================================ */
+function buildRail(){
+  const rail=$('#rail'); rail.innerHTML='';
+  if(B.total<=110){
+    for(let i=0;i<B.total;i++){
+      const t=document.createElement('div'); t.className='tick'; t.dataset.i=i;
+      rail.appendChild(t);
+    }
+  }else{
+    const bar=document.createElement('div'); bar.className='bar'; bar.innerHTML='<i></i>';
+    rail.appendChild(bar);
+  }
+  updateRail();
+}
+function updateRail(previewCol){
+  const rail=$('#rail');
+  const cur = previewCol==null ? B.col : previewCol;
+  if(B.total<=110){
+    for(const t of rail.children){
+      const i=+t.dataset.i;
+      t.className='tick'+(i<cur?' read':'')+(i>=cur&&i<cur+B.nVis?' active':'');
+    }
+  }else{
+    const fill=rail.querySelector('i');
+    if(fill) fill.style.width=(Math.min(cur+B.nVis,B.total)/B.total*100)+'%';
+  }
+}
+function chapterLabel(){
+  let best=null;
+  for(const t of B.toc){ if(t.spineIdx<=B.idx) best=t; else break; }
+  return best ? best.label : '第 '+(B.idx+1)+' 节';
+}
+function updateStatus(){
+  $('#barTitle').innerHTML = '<b></b>';
+  $('#barTitle b').textContent = B.title;
+  $('#stChap').textContent = chapterLabel()+' · '+(B.idx+1)+'/'+B.spine.length+' 节';
+  const to = Math.min(B.col+B.nVis, B.total);
+  $('#stCol').textContent = (B.nVis>1 ? (B.col+1)+'–'+to : (B.col+1)) + ' / ' + B.total + ' 栏';
+  for(const btn of $('#tocList').querySelectorAll('button'))
+    btn.classList.toggle('cur', +btn.dataset.si===B.idx);
+}
+
+/* ================================================================
+   5. input: taps, swipes, keys
+   ================================================================ */
+(function(){
+  const stage=$('#stage');
+  let px=0, py=0, pt=0;
+  stage.addEventListener('pointerdown', e=>{ px=e.clientX; py=e.clientY; pt=Date.now(); });
+  stage.addEventListener('pointerup', async e=>{
+    const dx=e.clientX-px, dy=e.clientY-py;
+    if(Math.abs(dx)>48 && Math.abs(dx)>Math.abs(dy)*1.4){ dx<0?pageNext():pagePrev(); return; }
+    if(Math.abs(dx)>10||Math.abs(dy)>10||Date.now()-pt>600) return;
+    const sel=getSelection(); if(sel && sel.toString()) return;
+    const link=e.target.closest && e.target.closest('a[data-zl-link]');
+    if(link){
+      const [si,frag]=link.getAttribute('data-zl-link').split('#');
+      B.back={idx:B.idx, col:B.col};
+      $('#backChip').classList.remove('hidden');
+      await showSpine(+si, {frag});
+      return;
+    }
+    const x=e.clientX/innerWidth;
+    if(x<0.35) pagePrev();
+    else if(x>0.65) pageNext();
+  });
+  async function screenFwd(){ if(B.col<B.maxStart) goCol(Math.min(B.col+B.nVis,B.maxStart));
+    else if(B.idx<B.spine.length-1) await showSpine(B.idx+1,{col:0}); }
+  async function screenBack(){ if(B.col>0) goCol(Math.max(0,B.col-B.nVis));
+    else if(B.idx>0) await showSpine(B.idx-1,{fromEnd:true}); }
+  document.addEventListener('keydown', e=>{
+    if($('#reader').classList.contains('hidden')) return;
+    if(document.body.classList.contains('panel-open')){ if(e.key==='Escape') closePanels(); return; }
+    switch(e.key){
+      case 'ArrowLeft': pagePrev(); break;
+      case 'ArrowRight': pageNext(); break;
+      case ' ': case 'PageDown': e.preventDefault(); screenFwd(); break;
+      case 'PageUp': screenBack(); break;
+      case 'Home': goCol(0); break;
+      case 'End': goCol(B.maxStart); break;
+    }
+  });
+  let rt; addEventListener('resize', ()=>{ if($('#reader').classList.contains('hidden')) return;
+    clearTimeout(rt); rt=setTimeout(()=>{
+      const st=$('#stage');
+      if(Math.abs(st.clientWidth-(B.stW||0))<2 && Math.abs(st.clientHeight-(B.stH||0))<2) return;
+      const frac=B.maxStart?B.col/B.maxStart:0; layout(); goCol(Math.round(frac*B.maxStart), false);
+    }, 160); });
+})();
+
+/* rail scrubbing: single taps are inert; double-tap-and-hold to drag with LIVE content preview */
+(function(){
+  const rail=$('#rail');
+  // Kill iOS's native double-tap-and-drag text-selection gesture at the source:
+  // it engages the instant the second finger lands, before any JS timer runs,
+  // and can anchor its selection in the selectable book text nearby.
+  $('#bottombar').addEventListener('touchstart', e=>e.preventDefault(), {passive:false});
+  const clearSel=()=>{ try{ const sel=getSelection(); if(sel) sel.removeAllRanges(); }catch(err){} };
+  const bubble=document.createElement('div'); bubble.id='scrubBubble'; document.body.appendChild(bubble);
+  let lastTap=0, lastX=0, armTimer=null, scrub=false, startCol=0, hinted=false;
+  const colAt=x=>{ const r=rail.getBoundingClientRect();
+    const raw=Math.round((x-r.left)/Math.max(1,r.width)*(B.total-1));
+    return Math.max(0, Math.min(raw, B.maxStart)); };
+  const showBubble=x=>{
+    const to=Math.min(B.col+B.nVis, B.total);
+    bubble.textContent=(B.nVis>1 ? (B.col+1)+'–'+to : (B.col+1))+' / '+B.total+' 栏';
+    bubble.style.left=Math.max(70, Math.min(innerWidth-70, x))+'px';
+    bubble.classList.add('show');
+  };
+  const stopScrub=(commit)=>{
+    clearTimeout(armTimer); armTimer=null;
+    if(!scrub) return;
+    scrub=false; rail.classList.remove('scrub'); bubble.classList.remove('show');
+    document.body.classList.remove('scrubbing');
+    clearSel();
+    if(!commit) goCol(startCol, false);   // snap back to where we started
+  };
+  rail.addEventListener('pointerdown', e=>{
+    const now=Date.now();
+    const dbl = (now-lastTap<380) && Math.abs(e.clientX-lastX)<48;
+    lastTap=now; lastX=e.clientX;
+    if(!dbl){
+      if(!hinted){ hinted=true; toast('进度条已防误触：双击并按住即可拖动跳转'); }
+      return;
+    }
+    const id=e.pointerId, x0=e.clientX;
+    e.preventDefault();
+    armTimer=setTimeout(()=>{
+      scrub=true; startCol=B.col;
+      clearSel();                          // nuke any selection iOS managed to start
+      rail.classList.add('scrub'); document.body.classList.add('scrubbing');
+      try{ rail.setPointerCapture(id); }catch(err){}
+      goCol(colAt(x0), false);            // content jumps along immediately
+      showBubble(x0);
+    }, 200);
+  });
+  rail.addEventListener('pointermove', e=>{
+    if(!scrub) return;
+    goCol(colAt(e.clientX), false);       // live preview: text follows the finger
+    showBubble(e.clientX);
+  });
+  rail.addEventListener('pointerup', ()=>stopScrub(true));
+  rail.addEventListener('pointercancel', ()=>stopScrub(false));
+})();
+
+$('#backChip').addEventListener('click', async ()=>{
+  $('#backChip').classList.add('hidden');
+  if(B.back){ const b=B.back; B.back=null; await showSpine(b.idx,{col:b.col}); }
+});
+
+/* ================================================================
+   6. panels, toc, settings UI
+   ================================================================ */
+function closePanels(){ $('#tocPanel').classList.remove('open'); $('#setPanel').classList.remove('open'); document.body.classList.remove('panel-open'); }
+$('#scrim').addEventListener('click', closePanels);
+$('#btnToc').addEventListener('click', ()=>{ $('#tocPanel').classList.add('open'); document.body.classList.add('panel-open'); });
+$('#btnSet').addEventListener('click', ()=>{ $('#setPanel').classList.add('open'); document.body.classList.add('panel-open'); });
+$('#btnPrevCh').addEventListener('click', ()=>showSpine(B.idx-1,{col:0}));
+$('#btnNextCh').addEventListener('click', ()=>showSpine(B.idx+1,{col:0}));
+$('#btnClose').addEventListener('click', ()=>{
+  B.zip=null; B.cache.clear(); $('#content').innerHTML='';
+  $('#reader').classList.add('hidden'); $('#home').classList.remove('hidden');
+  $('#fileInput').value='';
+});
+
+function buildTocList(){
+  const list=$('#tocList'); list.innerHTML='';
+  if(!B.toc.length){ list.innerHTML='<div class="empty">本书没有内置目录，可用顶栏「‹章 / 章›」按节浏览。</div>'; return; }
+  for(const t of B.toc){
+    const b=document.createElement('button');
+    b.textContent=t.label; b.style.setProperty('--d', Math.min(t.depth,3)); b.dataset.si=t.spineIdx;
+    b.addEventListener('click', async ()=>{ closePanels(); await showSpine(t.spineIdx,{frag:t.frag}); });
+    list.appendChild(b);
+  }
+}
+
+/* settings wiring */
+function relayoutKeepPos(){ const frac=B.maxStart?B.col/B.maxStart:0; layout(); goCol(Math.round(frac*B.maxStart), false); }
+function applySettingsToDom(){
+  document.documentElement.dataset.theme=S.theme;
+  const segSet=(id,val)=>{ for(const b of $(id).children) b.classList.toggle('on', b.dataset.v==String(val)); };
+  segSet('#segCols',S.cols); segSet('#segTurn',S.turn); segSet('#segFont',S.font); segSet('#segTheme',S.theme);
+  $('#vCols').textContent = S.cols==='auto' ? '自动（当前 '+currentNVis()+'）' : S.cols;
+  $('#vFs').textContent=S.fontSize+' px'; $('#sFs').textContent=S.fontSize+' px';
+  $('#vLh').textContent=S.lineHeight.toFixed(1); $('#sLh').textContent=S.lineHeight.toFixed(1);
+  $('#vGap').textContent=S.gap+' px'; $('#sGap').textContent=S.gap+' px';
+  $('#vMar').textContent=['极窄','窄','中','宽','极宽'][S.margin]; $('#sMar').textContent=['极窄','窄','中','宽','极宽'][S.margin];
+  $('#swIndent').classList.toggle('on',S.indent);
+  $('#swJustify').classList.toggle('on',S.justify);
+  $('#swBookCss').classList.toggle('on',S.bookCss);
+}
+for(const [id,key] of [['#segCols','cols'],['#segTurn','turn'],['#segFont','font'],['#segTheme','theme']])
+  $(id).addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    S[key] = key==='cols'&&b.dataset.v!=='auto' ? +b.dataset.v : b.dataset.v;
+    applySettingsToDom();
+    if(key==='theme') return;
+    if(key==='turn') return;
+    relayoutKeepPos(); applySettingsToDom();
+  });
+document.querySelectorAll('.stepper button').forEach(b=>b.addEventListener('click', ()=>{
+  const k=b.dataset.k, d=+b.dataset.d;
+  const lim={fontSize:[13,30],lineHeight:[1.3,2.6],gap:[12,120],margin:[0,4]}[k];
+  S[k]=Math.min(lim[1],Math.max(lim[0], Math.round((S[k]+d)*10)/10));
+  applySettingsToDom(); relayoutKeepPos();
+}));
+$('#swIndent').addEventListener('click',()=>{ S.indent=!S.indent; applySettingsToDom(); relayoutKeepPos(); });
+$('#swJustify').addEventListener('click',()=>{ S.justify=!S.justify; applySettingsToDom(); relayoutKeepPos(); });
+$('#swBookCss').addEventListener('click', async ()=>{
+  S.bookCss=!S.bookCss; applySettingsToDom();
+  if(B.zip) await showSpine(B.idx,{col:B.col});
+});
+
+/* ================================================================
+   7. file entry
+   ================================================================ */
+$('#openBtn').addEventListener('click',()=>$('#fileInput').click());
+$('#fileInput').addEventListener('change',e=>{ if(e.target.files[0]) openEpub(e.target.files[0]); });
+addEventListener('dragover',e=>{ e.preventDefault(); document.body.classList.add('dragover'); });
+addEventListener('dragleave',e=>{ if(e.target===document.body||e.clientX<=0) document.body.classList.remove('dragover'); });
+addEventListener('drop',e=>{
+  e.preventDefault(); document.body.classList.remove('dragover');
+  const f=[...e.dataTransfer.files].find(f=>/\.epub$/i.test(f.name)||f.type==='application/epub+zip');
+  if(f) openEpub(f); else toast('请拖入 .epub 文件');
+});
+
+/* expose for debugging */
+window.__zl = {B, S, resolvePath, layout, showSpine, pageNext, pagePrev, openEpub};
+</script>
+</body>
+</html>
